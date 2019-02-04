@@ -1,0 +1,730 @@
+<html>
+    <head>
+        <style>
+        #uiLayer {
+            border: 1px solid #000;     
+            cursor: none;       
+        }
+        
+        #hiddenCanvas {
+            /*display: none;
+            visibility: none;*/
+        }
+        
+        .wrapper {
+            position: relative;
+            width: 1000;
+            height: 600px;
+        }
+
+        .wrapper canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        </style>
+    </head>
+    <body>
+            <div class="wrapper">
+                    <canvas id="backgroundLayer" width="1000" height="600"></canvas>
+                    <canvas id="gameLayer0" width="1000" height="600"></canvas>
+                    <canvas id="maskLayer0" width="1000" height="600"></canvas>
+                    <canvas id="gameLayer1" width="1000" height="600"></canvas>
+                    <canvas id="maskLayer1" width="1000" height="600"></canvas>
+                    <canvas id="uiLayer" width="1000" height="600"></canvas>
+                </div>
+
+
+            <canvas id="hiddenCanvas"></canvas>
+    </body>
+    <script>
+        // Globals
+        const DEBUG = false;
+
+        backgroundLayer = document.getElementById("backgroundLayer");
+        gameLayer0 = document.getElementById("gameLayer0");
+        maskLayer0 = document.getElementById("maskLayer0");
+        gameLayer1 = document.getElementById("gameLayer1");
+        maskLayer1 = document.getElementById("maskLayer1");
+        uiLayer = document.getElementById("uiLayer");
+
+        
+        backgroundLayerCtx = backgroundLayer.getContext("2d");
+        gameLayer0Ctx = gameLayer0.getContext("2d");
+        maskLayer0Ctx = maskLayer0.getContext("2d");
+        gameLayer1Ctx = gameLayer1.getContext("2d");
+        maskLayer1Ctx = maskLayer1.getContext("2d");
+        uiLayerCtx = uiLayer.getContext("2d");
+        
+        
+        const IMPACT_LIFETIME = 2000;
+        const FLOATING_TEXT_LIFETIME = 1000;
+        const MIRKO_UPTIME = 2000;
+        const EXCLAMATION_CHANCE = 1.05;
+        const MOLE_CHANCE = 0.01;
+        const CANVAS_WIDTH = backgroundLayer.width;
+        const CANVAS_HEIGHT = backgroundLayer.height;
+        // TODO: IMPACTS ARE BROKEN!
+
+        MOUSE_DOWN = false;
+        
+
+        SCORE = 0;
+        CURRENT_SERIES = 0;
+        BEST_SERIES = 0;
+
+        CURSOR_X = 0;
+        CURSOR_Y = 0;
+        CURSOR_IMG = new Image();
+        CURSOR_IMG.src = 'img/hammer.png';
+        CURSOR_IMG.width = 413/4;
+        CURSOR_IMG.height = 500/4;
+        CURSOR_FLIP_SIGN = -1;
+
+        CURSOR_STATE = 0;
+
+        BACKGROUND_MASK_0 = new Image();
+        BACKGROUND_MASK_0.src = "img/background_behind_mask.png"
+        BACKGROUND_MASK_1 = new Image();
+        BACKGROUND_MASK_1.src = "img/background_positive.png"
+        BACKGROUND_IMG = new Image();
+        BACKGROUND_IMG.src = "img/background.jpg";
+        BACKGROUND_IMG.onload = function() {
+            // Setup background layers
+            let ctx = backgroundLayerCtx;
+            ctx.save()
+            ctx.drawImage(BACKGROUND_IMG, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.restore()
+            //ctx.fillRect(100, 100, 100, 400);
+
+            ctx = maskLayer0Ctx;
+            ctx.save();
+            ctx.drawImage(BACKGROUND_MASK_0, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.globalCompositeOperation = "source-in";
+            ctx.drawImage(BACKGROUND_IMG, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.restore(); 
+            
+            ctx = maskLayer1Ctx;
+            ctx.save();
+            ctx.drawImage(BACKGROUND_MASK_1, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.globalCompositeOperation = "source-in";
+            ctx.drawImage(BACKGROUND_IMG, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            ctx.restore(); 
+        }
+
+
+        IMPACT_IMG = new Image();
+        IMPACT_IMG.src = "img/crack_2.png";
+        IMPACT_IMG.width = 100;
+        IMPACT_IMG.height = 100;
+
+        MOLE_IMG = new Image();
+        MOLE_IMG.src = "img/mole.png";
+
+        MIRKO_IMG = new Image();
+        MIRKO_IMG.src = "img/erik.png";
+        MIRKO_IMG.width = 250;
+        MIRKO_IMG.height = 296;
+
+        MIRKO_IMG_HIT = new Image();
+        MIRKO_IMG_HIT.src = "img/erik_hit.png";
+        MIRKO_IMG_HIT.width = 250;
+        MIRKO_IMG_HIT.height = 296;
+
+        LAST_MIRKO_ID = 0;
+        
+
+
+        function Mole(x, y) {
+            this.x = x;
+            this.y = y;
+            this.phi = 0;
+            this.v = 0;
+            this.base_angle = 20;
+            this.angle = this.base_angle
+
+            let timeout = 1000 + 1000 * Math.random()
+            var self = this;
+            setTimeout(function() {
+                self.v = 2 + 3*Math.random()
+            }, timeout);
+        }
+        Mole.prototype.update = function() {
+            this.x += this.v;
+            this.phi += this.v/10;
+            this.y += Math.sin(this.phi);
+            this.angle = this.base_angle + Math.sin(this.phi);
+        }
+
+        function TimedEntity(x, y) {
+            this.x = x;
+            this.y = y;
+            this.timestamp = performance.now();
+        }
+
+        function Impact(x, y) {
+            TimedEntity.call(this, x, y);
+        }
+
+        function ScoreText(x, y, text, color, size) {
+            TimedEntity.call(this, x, y);
+            this.text = text;
+            this.color = color;
+            this.alpha = 1;
+            this.phi = Math.PI * 2 * Math.random();
+            this.size = size;
+            this.rotation = 0;
+        }
+        ScoreText.prototype.update = function(timestamp) {
+            this.phi += 0.1
+            this.alpha = 1 - (timestamp - this.timestamp)/FLOATING_TEXT_LIFETIME;
+            this.y -= 1;
+            this.x += Math.sin(this.phi);
+        }
+
+        function Exclamation(x, y) {
+            TimedEntity.call(this, x, y);
+            this.text = exclamationChoices[Math.floor(Math.random()*exclamationChoices.length)];
+            this.rotation = 0;
+            this.phi = 2*Math.PI * Math.random();;
+            this.size = 50;
+            //this.x = x;
+        }
+        Exclamation.prototype.update = function(timestamp) {
+            this.phi += 0.01
+            this.color = "rgb(228, 109, 255)";
+            this.size -= 0.2;
+            this.rotation += Math.sin(this.phi)/200;
+            this.alpha = 1 - (timestamp - this.timestamp)/(2*FLOATING_TEXT_LIFETIME);
+        }
+
+        function Mirko(x, y) {
+            this.id = LAST_MIRKO_ID;
+            LAST_MIRKO_ID++;
+            this.baseX = x;
+            this.baseY = y;
+            this.x = x;
+            this.y = y;
+            
+            this.interpFrac = 0.2;
+            this.targetX = this.x;
+            this.targetY = this.y;
+            this.emerging = false;
+            this.retreating = false;
+            this.up = false;
+            this.retreatTimeout = undefined;
+            this.emergeTimeout = undefined;
+            this.maxTimeout = 1000;
+            this.minTimeout = 100;
+            this.img = MIRKO_IMG;
+
+            this.hitAreaWidth = MIRKO_IMG.width;
+            this.hitAreaHeight = 100;
+        }
+        Mirko.prototype.update = function() {
+            //this.targetX = circle.x;
+            //this.targetY = circle.y;
+            let dist = this.getTargetDistance();
+        
+            if(0 < dist && dist <= 2) {
+                this.stop()
+                this.x = this.targetX;
+                this.y = this.targetY;
+                if(this.retreating) {
+                    this.x = 70 + (CANVAS_WIDTH - 140) * Math.random();
+                    this.targetX = this.x;
+                    this.hideStars();
+                    this.img = MIRKO_IMG;
+                    this.emerge();
+                    this.retreating = false;
+                } else if(this.emerging) {
+                    this.up = true;
+                    this.emerging = false;
+                }
+            }
+            let [dx, dy] = this.getTargetVector();
+            this.x += this.interpFrac * dx;
+            this.y += this.interpFrac * dy;
+        }
+        Mirko.prototype.getUptime = function() {
+            if(this.retreating) {
+                return 0;
+            }
+            return performance.now () - this.emergedTimestamp;
+        }
+
+        Mirko.prototype.getTargetVector = function() {
+            let dx = this.targetX - this.x;
+            let dy = this.targetY - this.y;
+            return [dx, dy];
+        }
+
+        Mirko.prototype.getTargetDistance = function() {
+            return l2norm([this.targetX, this.targetY], [this.x, this.y]);
+        }
+        Mirko.prototype.emerge = function() {
+            if(this.emerging) {
+                return;
+            }
+        
+            this.emerging = true;
+            
+            this.retreating = false;
+            this.targetY = 260 + 40 * Math.random();
+            
+            let timeout = this.minTimeout + (this.maxTimeout - this.minTimeout) * Math.random();
+
+            var self = this;
+            clearTimeout(this.emergeTimeout);
+            
+            this.emergeTimeout = setTimeout(function() {
+                self.start();
+                self.emergedTimestamp = performance.now(); 
+            }, timeout);    
+        }
+        Mirko.prototype.retreat = function(hit) {
+            if(this.retreating) {
+                return;
+            }
+            this.retreating = true;
+            this.emerging = false;
+            this.up = false;
+            
+            let timeout = 0;
+            if(hit) {
+                this.img = MIRKO_IMG_HIT;
+                this.showStars();
+                //  10 + 90 * Math.min(1, CURRENT_SERIES/100)
+                floatingTexts.push(new ScoreText(this.x, this.y - this.img.height/2, "+" + CURRENT_SERIES, "rgb(80, 244, 66)", 10 + 90 * Math.min(1, CURRENT_SERIES/100)));
+                timeout = 500;
+            }
+
+            this.targetY = CANVAS_HEIGHT-50;
+            
+            var self = this;
+            clearTimeout(this.retreatTimeout);
+            this.retreatTimeout = setTimeout(function() {
+                self.start();
+                //self.hideStars();
+            }, timeout);
+        }
+        Mirko.prototype.wasHit = function(impactX, impactY) {
+            if(this.retreating || !isInRect(impactX, impactY, this.x-this.img.width/2, this.y-this.img.height/2, this.hitAreaWidth, this.hitAreaHeight)) {
+                return false;
+            }
+
+            var canvas = document.getElementById('hiddenCanvas');
+            canvas.width = this.img.width;
+            canvas.height = this.img.height;
+            var ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(this.img, 0, 0);
+            var imgdata = ctx.getImageData(impactX - this.x + this.img.width/2, impactY - this.y + this.img.height/2, 1, 1).data;
+            return !(imgdata[0] == 0 &&
+                imgdata[1] == 0 &&
+                imgdata[2] == 0 &&
+                imgdata[3] == 0);
+        }
+        Mirko.prototype.stop = function() {
+            this.interpFrac = 0;
+        }
+        Mirko.prototype.start = function() {
+            this.interpFrac = 0.2;
+        }
+        Mirko.prototype.showStars = function() {
+            stars[this.id] = [
+                new Star(this, 0),
+                new Star(this, Math.PI/3),    
+                new Star(this, Math.PI*2/3),
+                new Star(this, Math.PI),
+                new Star(this, Math.PI*4/3),
+                new Star(this, Math.PI*5/3),
+            ];
+        }
+        Mirko.prototype.hideStars = function() {
+            stars[this.id] = [];
+        }
+
+        function Star(mirko, phi) {
+            this.mirko = mirko;
+            this.phi = phi;
+        }
+        Star.prototype.update = function() {
+            this.phi += 0.1;
+        }
+
+        // instantiate object collections
+
+        var impacts = [];
+        var moles = [];
+
+
+        var mirkos = [];
+        mirkos.push(new Mirko(750, 250));
+        mirkos.push(new Mirko(750, 450));
+        mirkos.push(new Mirko(750, 450));
+        //mirkos.push(new Mirko(750, 450));
+
+        var stars = {};
+
+        var floatingTexts = [];
+        var exclamations = [];
+
+        var exclamationChoices = [
+            "Aua!",
+            "  Bitte nicht\nwegklicken!",
+            "Ich leg mich\n  wieder hin",
+            "    Erik ist der\nbessere Trader",
+            "Wenn das die\n Chefin sieht!"
+        ]
+
+        var circle = {
+            x: 310,
+            y: 310,
+        }
+
+        
+        
+        for(mirko of mirkos) {
+            mirko.retreat();
+        }
+
+        // Event listeners
+
+        uiLayer.onmousedown = function(evt) {
+            MOUSE_DOWN = true;
+            let [impactX, impactY] = getImpactCoordinates(evt);
+            impacts.push(new Impact(impactX, impactY));
+            
+            let hit = false;
+            for(mirko of mirkos) {
+                if(mirko.wasHit(impactX, impactY)) {
+                    CURRENT_SERIES += 1;
+                    SCORE += CURRENT_SERIES;
+                    hit = true;
+                    if(CURRENT_SERIES > BEST_SERIES) {
+                        BEST_SERIES = CURRENT_SERIES;
+                    }
+                    let rand =Math.random();
+                    console.log(rand);
+                    if(rand <= EXCLAMATION_CHANCE) {
+                        let x = Math.max(Math.min(mirko.x, CANVAS_WIDTH-100), 150);
+                        console.log(x);
+                        floatingTexts.push(new Exclamation(x, mirko.y));
+                    }
+                    if(rand <= MOLE_CHANCE) {
+                        moles.push(new Mole(-500, 300));
+                    }
+                    mirko.retreat(true);
+                }
+            }
+            if(!hit) {
+                CURRENT_SERIES = 0;
+            }
+        }
+
+        uiLayer.onmouseup = function(evt) {
+            MOUSE_DOWN = false;
+            CURSOR_STATE = 0;
+        }
+
+        uiLayer.onmousemove = function(evt) {
+            [CURSOR_X, CURSOR_Y] = getMouseCoordinates(evt);
+        }
+
+
+        // Helper functions
+
+        function getMouseCoordinates(evt) {
+            let x = evt.clientX - uiLayer.offsetLeft;
+            let y = evt.clientY - uiLayer.offsetTop;
+            return [x, y];
+        }
+
+        function l2norm(v1, v2) {
+            let [x1, y1] = v1;
+            let [x2, y2] = v2;
+            return Math.sqrt((x1-x2)**2 + (y1-y2)**2);
+        }
+
+        function getImpactCoordinates(evt) {
+            var x = CURSOR_X + CURSOR_FLIP_SIGN * CURSOR_IMG.width*5/8;
+            
+            var y = CURSOR_Y + CURSOR_IMG.height/4;
+            return [x, y];
+        }
+
+        function isInRect(px, py, rx, ry, rw, rh) {
+            return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+        }
+
+        // Rendering functions 
+
+        function drawCursor() {
+            let ctx = uiLayerCtx;
+            ctx.save();
+            ctx.translate(CURSOR_X, CURSOR_Y);
+            //ctx.fillRect(-CURSOR_IMG.width/2, -CURSOR_IMG.height/2, 100, 100);
+            ctx.scale(CURSOR_FLIP_SIGN, 1);
+            if(MOUSE_DOWN) {
+                CURSOR_STATE = Math.min(CURSOR_STATE + 1, 2);
+                ctx.translate(-CURSOR_IMG.width/2, CURSOR_IMG.height/2);
+                angle = 15 * CURSOR_STATE;
+                ctx.rotate(angle*Math.PI/180);
+                ctx.translate(CURSOR_IMG.width/2, -CURSOR_IMG.height/2);
+            }
+            
+            ctx.drawImage(CURSOR_IMG, -CURSOR_IMG.width/2, -CURSOR_IMG.height/2, CURSOR_IMG.width, CURSOR_IMG.height);
+            ctx.restore();
+        }
+
+        function drawImpact(impact, alpha) {
+            let ctx = uiLayerCtx;
+            ctx.save();
+            ctx.translate(impact.x, impact.y);
+            ctx.globalAlpha = alpha;
+            ctx.drawImage(IMPACT_IMG, -IMPACT_IMG.width/2, -IMPACT_IMG.height/2, IMPACT_IMG.width, IMPACT_IMG.height);
+            ctx.restore();
+
+            if(DEBUG) {
+                ctx.save()
+                ctx.fillStyle = "green";
+                ctx.fillRect(impact.x-4, impact.y-4, 8, 8);
+                ctx.restore()
+            }
+        }
+        
+        function drawMole(mole) {
+            let ctx = gameLayer0Ctx;
+            ctx.save();
+            ctx.translate(mole.x, mole.y);
+            ctx.scale(-1,1);
+            ctx.rotate(mole.angle*Math.PI/180);
+
+            ctx.globalAlpha = 0.6;
+            ctx.drawImage(MOLE_IMG, -MOLE_IMG.width/2, -MOLE_IMG.height/2, MOLE_IMG.width, MOLE_IMG.height);
+            ctx.restore();
+        }
+
+        function drawMirko(mirko) {
+            let ctx = gameLayer1Ctx;
+            ctx.save();
+            ctx.translate(mirko.x, mirko.y);
+            ctx.drawImage(mirko.img, -mirko.img.width/2, -mirko.img.height/2, mirko.img.width, mirko.img.height);
+            ctx.restore();
+
+            if(DEBUG) {
+                ctx = uiLayerCtx;
+                ctx.save();
+                //let [hitAreaX, hitAreaY] = mirko.getHitAreaCoords();
+                ctx.translate(mirko.x-mirko.img.width/2, mirko.y-mirko.img.height/2);
+                ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
+                ctx.fillRect(0, 0, mirko.hitAreaWidth, mirko.hitAreaHeight);
+                ctx.restore();
+            }
+        }
+
+        function drawScore() {
+            let ctx = uiLayerCtx;
+            ctx.save();
+            ctx.font = "32px Impact";
+            
+            let scoreString = "Punkte: " + SCORE;
+            let cSeriesString = "Aktuelle Serie: " + CURRENT_SERIES;
+            let bSeriesString = "Beste Serie: " + BEST_SERIES;
+            ctx.fillStyle = "white";
+            ctx.fillText(scoreString, 10, 50);
+            ctx.fillText(cSeriesString, 10, 82);
+            ctx.fillText(bSeriesString, 10, 114);
+            ctx.fillStyle = "black";
+            ctx.fillText(scoreString, 12, 52);
+            ctx.fillText(cSeriesString, 12, 84);
+            ctx.fillText(bSeriesString, 12, 116);
+            ctx.fillStyle = "rgb(160, 131, 25)";
+            ctx.fillText(scoreString, 11, 51);
+            ctx.fillText(cSeriesString, 11, 83);
+            ctx.fillText(bSeriesString, 11, 115);
+            ctx.globalAlpha = 0.8;
+            ctx.fillStyle = "rgb(255, 200, 0)";
+            ctx.fillText(scoreString, 10, 50);
+            ctx.fillText(cSeriesString, 10, 82);
+            ctx.fillText(bSeriesString, 10, 114);
+            ctx.restore();
+        }
+
+        function drawStar(star) {
+            let ctx = gameLayer1Ctx;
+            ctx.save()
+            
+            ctx.translate(star.mirko.x + 50 * Math.sin(star.phi), star.mirko.y - star.mirko.img.height/2 + 10 * Math.cos(star.phi))
+            
+            var rot = Math.PI / 2 * 3;
+            var cx = 0;
+            var cy = 0;
+            var spikes = 5;
+            var step = Math.PI / spikes;
+            var outerRadius = 10;
+            var innerRadius = 5;
+
+            ctx.beginPath();
+            ctx.moveTo(0, - outerRadius)
+            for (i = 0; i < spikes; i++) {
+                x = Math.cos(rot) * outerRadius;
+                y = Math.sin(rot) * outerRadius;
+                ctx.lineTo(x, y)
+                rot += step
+
+                x = Math.cos(rot) * innerRadius;
+                y = Math.sin(rot) * innerRadius;
+                ctx.lineTo(x, y)
+                rot += step
+            }
+            ctx.lineTo(0, - outerRadius)
+            ctx.closePath();
+            ctx.lineWidth=3;
+            ctx.strokeStyle = "rgba(255, 212, 40)";
+            //ctx.strokeStyle = "rgba(100, 80, 40)";
+            ctx.stroke();
+            ctx.fillStyle = "rgba(255, 255," + 255 * Math.random() + ")";
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function drawFloatingText(text) {
+            let ctx = uiLayerCtx;
+            ctx.save();
+            let textWidth = ctx.measureText(text.text).width;
+            
+            
+            ctx.globalAlpha = text.alpha;
+            ctx.translate(text.x, text.y);
+            ctx.translate(textWidth, -text.size/4);
+            ctx.rotate(text.rotation);
+            ctx.translate(-textWidth, text.size/4);
+            ctx.fillRect(-5, -5, 10, 10);
+            ctx.translate(-textWidth/2, 0);
+
+            let lines = text.text.split("\n");
+            for(var i = 0; i < lines.length; i++) {
+                ctx.translate(0, i*text.size);
+                let line = lines[i];
+                ctx.font = text.size + "px Impact";
+                ctx.fillStyle = "black"
+                ctx.fillText(line, 2, 2);
+                ctx.fillStyle = text.color;
+                ctx.fillText(line, 0, 0);
+            }
+            ctx.restore();
+        }
+
+        
+        // Game loop
+
+        function loop(timestamp) {            
+            requestAnimationFrame(loop);
+            gameLayer0Ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            gameLayer1Ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            uiLayerCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            let ctx = uiLayerCtx;
+            let delIndices = [];
+            for(i = 0; i < impacts.length; i++) {
+                let impact = impacts[i];
+                let alpha = 1 - (timestamp - impact.timestamp)/IMPACT_LIFETIME;
+                if(alpha < 0) {
+                    delIndices.push(i);
+                    continue;
+                }
+                drawImpact(impact, alpha);
+            }
+
+            for(i of delIndices) {
+                impacts.splice(i, 1);
+            }
+
+            delIndices = [];
+            for(i = 0; i < moles.length; i++) {
+                let mole = moles[i];
+                mole.update();
+                drawMole(mole);
+                if(mole.x > CANVAS_WIDTH + MOLE_IMG.width/2) {
+                    delIndices.push(i);
+                }
+            }
+            for(i of delIndices) {
+                moles.splice(i, 1);
+            }
+
+            for(mirko of mirkos) {
+                if(mirko.up && mirko.getUptime() > MIRKO_UPTIME) {
+                    mirko.retreat(false);
+                    CURRENT_SERIES = 0;
+                }
+                mirko.update();
+                drawMirko(mirko);
+            }
+
+            // Get vector to center of canvas
+            let dx = CANVAS_WIDTH/2 - circle.x;
+            let dy = CANVAS_HEIGHT/2 - circle.y;
+            
+            // Get orthogonal vector
+            let x = -dy;
+            let y = dx;
+            let mag = Math.sqrt(x**2 + y**2);
+
+            // Normalize vector
+            y = y/mag;
+            x = x/mag;
+            circle.x += x*5;
+            circle.y += y*5;
+
+            let dx2 = CANVAS_WIDTH/2 - circle.x;
+            let dy2 = CANVAS_HEIGHT/2 - circle.y;
+            let mag2 = Math.sqrt(dx2**2 + dy2**2)
+            let fac =  mag2 - mag;
+            
+            circle.x += dx2/mag2 * fac;
+            circle.y += dy2/mag2 * fac;
+
+            // Draw circle
+            
+            ctx = gameLayer1Ctx;
+            ctx.beginPath();
+            ctx.arc(circle.x, circle.y, 10, 0, 2* Math.PI);
+            ctx.fill();
+            ctx.closePath();
+
+
+            
+            for(var index in stars) {
+                let starGroup = stars[index];
+                for(star of starGroup) {
+                    star.update();
+                    drawStar(star);
+                }
+            }
+            drawScore();
+
+            delIndices = [];
+            for(i = 0; i < floatingTexts.length; i++) {
+                let text = floatingTexts[i];
+                text.update(timestamp);
+                if(text.alpha < 0) {
+                    delIndices.push(i);
+                    continue;
+                }
+                drawFloatingText(text);
+            }
+            for(i of delIndices) {
+                floatingTexts.splice(i, 1);
+            }
+
+
+            drawCursor();
+            
+        }
+        
+        requestAnimationFrame(loop);
+    </script>
+</html>
